@@ -1,7 +1,6 @@
 # Lean Architecture a technický dlh – simulačný experiment
 
-> Druhý samostatný experiment k téme architektonického driftu je opísaný v
-> [README_ARCHITECTURAL_DRIFT.md](README_ARCHITECTURAL_DRIFT.md).
+> Prehľad celého repozitára je v hlavnom [README.md](README.md).
 
 Malý reprodukovateľný experiment porovnáva tri stratégie počas 24 sprintov:
 
@@ -58,6 +57,30 @@ defects(t) ~ Poisson(lambda(t))
 Seed je pevný (`42`), takže dopyt, zložitosť aj náhodné chyby sú reprodukovateľné. Kumulatívne náklady sú súčtom vývojového času a jednoduchej penalizácie za chyby uniknuté z iterácie. Skóre udržiavateľnosti je pomocný index `100 × exp(-debt / 35)`; nejde o štandardizovanú metriku.
 
 Sensitivity analysis opakuje managed stratégiu s hranicami od 4 do 32. V každom behu zachová rovnaké prostredie aj seed, takže pozorované rozdiely spôsobuje zmena politiky refactoringu, nie iný prítok práce.
+
+## Neistota požiadaviek a grafy
+
+Model má voliteľnú volatilitu požiadaviek (`requirement_volatility`, predvolene 0, takže hlavný beh dáva rovnaké čísla ako v eseji). V každom sprinte nastane zmena požiadaviek s danou pravdepodobnosťou a má dva dôsledky:
+
+- **prerábky:** 5–15 % už dodaných funkcionalít sa vráti do backlogu ako prerábky, ktoré majú prednosť pred novými funkcionalitami;
+- **zneplatnená architektúra:** 20–50 % architektúry navrhnutej vopred, ktorú ešte nepotvrdil vývoj, prestane zodpovedať realite a treba ju prerobiť. Cena prerobenia je `redesign_cost_factor` × zneplatnená investícia. Neoverená architektúra sa každým sprintom o 10 % „overí“. Lean stratégia architektúru dopredu nenavrhuje, preto ju zmena takto nezasiahne.
+
+Pri neistote sa sleduje **cena na novú funkcionalitu** (kumulatívne náklady / nové funkcionality bez prerábok).
+
+```bash
+python figures.py --seeds 200 --output-dir figures
+```
+
+Skript vygeneruje do jedného priečinka všetkých osem grafov pre esej aj prezentáciu. Grafy sú kompaktné, bez nadpisov a majú 300 DPI, takže sa dajú na slajde zväčšiť:
+
+1. vývoj technického dlhu (seed 42),
+2. cena zmeny,
+3. dodané funkcionality s kumulatívnym dopytom,
+4. kontrolný scenár bez splácania (200 seedov),
+5. vplyv neistoty požiadaviek,
+6. mapa, kedy sa lean oplatí viac než clean,
+7. citlivosť hranice splácania,
+8. diagram jedného sprintu.
 
 ## Interpretácia
 

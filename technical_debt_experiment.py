@@ -44,6 +44,12 @@ class SimulationConfig:
     debt_exponent: float = 1.25
     defect_fix_time: float = 0.35
     escaped_defect_penalty: float = 0.75
+    # Neistota požiadaviek. Pri nulovej volatilite model presne zodpovedá pôvodnému experimentu.
+    requirement_volatility: float = 0.0
+    change_feature_share: tuple[float, float] = (0.05, 0.15)
+    change_architecture_share: tuple[float, float] = (0.20, 0.50)
+    architecture_validation_rate: float = 0.10
+    redesign_cost_factor: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -70,6 +76,11 @@ class ProjectEnvironment:
     feature_demand: np.ndarray
     complexity: np.ndarray
     shortcut_pressure: np.ndarray
+    # Podiel už dodaných funkcionalít, ktoré zmena požiadaviek zasiahne
+    # (0 = v iterácii nenastala zmena).
+    change_feature_share: np.ndarray | None = None
+    # Podiel zatiaľ neoverených architektonických predpokladov, ktoré zmena zneplatní.
+    change_architecture_share: np.ndarray | None = None
 
 
 def default_strategies(repayment_threshold: float = 8.0) -> list[StrategyConfig]:
@@ -115,14 +126,29 @@ def create_environment(config: SimulationConfig) -> ProjectEnvironment:
     """Vygeneruje reprodukovateľné externé podmienky projektu."""
 
     rng = np.random.default_rng(config.seed)
+    feature_demand = rng.integers(
+        config.min_feature_demand,
+        config.max_feature_demand + 1,
+        size=config.iterations,
+    )
+    complexity = np.clip(rng.normal(1.0, 0.08, config.iterations), 0.80, 1.20)
+    shortcut_pressure = rng.uniform(0.90, 1.10, config.iterations)
+
+    # Zmeny požiadaviek majú vlastný generátor, aby nezmenili pôvodný prítok práce.
+    # Náhodné čísla sa ťahajú vždy, takže pri rôznej volatilite sa porovnávajú
+    # rovnaké scenáre (common random numbers) a krivky v analýze nie sú zašumené.
+    change_rng = np.random.default_rng([config.seed, 7])
+    occurs = change_rng.random(config.iterations) < config.requirement_volatility
+    feature_share = change_rng.uniform(*config.change_feature_share, config.iterations)
+    architecture_share = change_rng.uniform(
+        *config.change_architecture_share, config.iterations
+    )
     return ProjectEnvironment(
-        feature_demand=rng.integers(
-            config.min_feature_demand,
-            config.max_feature_demand + 1,
-            size=config.iterations,
-        ),
-        complexity=np.clip(rng.normal(1.0, 0.08, config.iterations), 0.80, 1.20),
-        shortcut_pressure=rng.uniform(0.90, 1.10, config.iterations),
+        feature_demand=feature_demand,
+        complexity=complexity,
+        shortcut_pressure=shortcut_pressure,
+        change_feature_share=np.where(occurs, feature_share, 0.0),
+        change_architecture_share=np.where(occurs, architecture_share, 0.0),
     )
 
 
@@ -146,9 +172,29 @@ class ProjectSimulator:
             raise ValueError("Dĺžka prostredia sa nezhoduje s počtom iterácií.")
 
         rng = np.random.default_rng(self.config.seed + strategy.defect_seed_offset)
+        n = self.config.iterations
+        feature_shares = (
+            self.environment.change_feature_share
+            if self.environment.change_feature_share is not None
+            else np.zeros(n)
+        )
+        architecture_shares = (
+            self.environment.change_architecture_share
+            if self.environment.change_architecture_share is not None
+            else np.zeros(n)
+        )
         debt = 0.0
-        backlog = 0
+        backlog = 0  # nové požiadavky
+        rework_backlog = 0  # prerábky vyvolané zmenou požiadaviek (majú prednosť)
         delivered_total = 0
+        new_delivered_total = 0
+        rework_delivered_total = 0
+        rework_added_total = 0
+        # Architektúra navrhnutá vopred na predpokladoch, ktoré ešte neoveril
+        # skutočný vývoj. Zmena požiadaviek môže časť z nej zneplatniť.
+        speculative_architecture = 0.0
+        pending_redesign = 0.0
+        cumulative_redesign_time = 0.0
         defect_total = 0
         previous_new_defects = 0
         cumulative_development_time = 0.0
@@ -172,6 +218,26 @@ class ProjectSimulator:
                 self.config.sprint_capacity,
             )
 
+            # Zmena požiadaviek: časť už dodaných funkcionalít treba prerobiť
+            # a časť vopred navrhnutej architektúry prestáva zodpovedať realite.
+            feature_share = float(feature_shares[index])
+            requirement_change = feature_share > 0.0
+            rework_added = 0
+            if requirement_change:
+                rework_added = int(round(feature_share * delivered_total))
+                rework_backlog += rework_added
+                rework_added_total += rework_added
+                invalidated = speculative_architecture * float(architecture_shares[index])
+                speculative_architecture -= invalidated
+                pending_redesign += invalidated * self.config.redesign_cost_factor
+
+            redesign_time = min(
+                pending_redesign,
+                max(0.0, self.config.sprint_capacity - architecture_time - defect_rework_time),
+            )
+            pending_redesign -= redesign_time
+            cumulative_redesign_time += redesign_time
+
             refactoring_performed = False
             refactoring_time = 0.0
             debt_repaid = 0.0
@@ -194,13 +260,19 @@ class ProjectSimulator:
                 self.config.sprint_capacity
                 - architecture_time
                 - refactoring_time
-                - defect_rework_time,
+                - defect_rework_time
+                - redesign_time,
             )
             capacity_limited_features = int(np.floor(feature_capacity / change_cost))
-            delivered_now = min(backlog, capacity_limited_features)
+            rework_now = min(rework_backlog, capacity_limited_features)
+            new_now = min(backlog, capacity_limited_features - rework_now)
+            delivered_now = rework_now + new_now
             feature_development_time = delivered_now * change_cost
-            backlog -= delivered_now
+            rework_backlog -= rework_now
+            backlog -= new_now
             delivered_total += delivered_now
+            new_delivered_total += new_now
+            rework_delivered_total += rework_now
 
             # Skratky vytvárajú dlh úmerný množstvu dodanej práce. CLEAN má
             # malú, nie nulovú sadzbu: ani dobrá architektúra neeliminuje dlh.
@@ -224,7 +296,14 @@ class ProjectSimulator:
                 architecture_time
                 + refactoring_time
                 + defect_rework_time
+                + redesign_time
                 + feature_development_time
+            )
+            # Architektúra sa priebežne overuje dodanými funkcionalitami;
+            # investícia tohto sprintu je zatiaľ neoverená.
+            speculative_architecture = (
+                speculative_architecture * (1.0 - self.config.architecture_validation_rate)
+                + architecture_time
             )
             project_cost = development_time + new_defects * self.config.escaped_defect_penalty
             cumulative_development_time += development_time
@@ -236,7 +315,14 @@ class ProjectSimulator:
                     "iteration": iteration,
                     "strategy": strategy.name,
                     "new_feature_demand": incoming_demand,
-                    "backlog_features": backlog,
+                    "backlog_features": backlog + rework_backlog,
+                    "new_backlog_features": backlog,
+                    "rework_backlog_features": rework_backlog,
+                    "requirement_change": requirement_change,
+                    "rework_features_added": rework_added,
+                    "rework_added_total": rework_added_total,
+                    "new_features_delivered": new_delivered_total,
+                    "rework_features_delivered": rework_delivered_total,
                     "delivered_this_iteration": delivered_now,
                     "delivered_features": delivered_total,
                     "technical_debt": debt,
@@ -246,6 +332,9 @@ class ProjectSimulator:
                     "architecture_time": architecture_time,
                     "refactoring_time": refactoring_time,
                     "defect_rework_time": defect_rework_time,
+                    "redesign_time": redesign_time,
+                    "cumulative_redesign_time": cumulative_redesign_time,
+                    "speculative_architecture": speculative_architecture,
                     "feature_development_time": feature_development_time,
                     "development_time": development_time,
                     "cumulative_development_time": cumulative_development_time,

@@ -46,6 +46,21 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual(sensitivity["repayment_threshold"].tolist(), list(thresholds))
         self.assertTrue((sensitivity["refactoring_count"] >= 0).all())
 
+    def test_zero_volatility_keeps_essay_numbers(self) -> None:
+        summary = make_summary(run_experiment(self.config))
+        self.assertEqual(
+            summary["total_delivered_features"].tolist(), [124, 73, 123]
+        )
+        self.assertEqual(summary["total_defects"].tolist(), [10, 28, 4])
+
+    def test_requirement_changes_create_rework_and_redesign(self) -> None:
+        config = SimulationConfig(seed=42, requirement_volatility=0.4)
+        results = run_experiment(config)
+        last = results.groupby("strategy").tail(1).set_index("strategy")
+        self.assertTrue((last["rework_added_total"] > 0).all())
+        self.assertGreater(last.loc["CLEAN FROM START", "cumulative_redesign_time"], 0)
+        self.assertEqual(last.loc["LEAN / MANAGED DEBT", "cumulative_redesign_time"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

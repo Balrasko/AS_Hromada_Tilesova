@@ -1,5 +1,7 @@
 # Architektonický drift – simulačný experiment
 
+> Prehľad celého repozitára je v hlavnom [README.md](README.md).
+
 Experiment je praktickou prílohou k eseji **„Architektonický drift, ako zabrániť postupnému rozpadu softvérovej architektúry“**. Počas 25 sprintov porovnáva tri spôsoby údržby plánovanej štvorvrstvovej architektúry systému objednávok:
 
 - **NO ARCHITECTURE GOVERNANCE** – tím optimalizuje okamžitú rýchlosť a nekontroluje smer závislostí,
